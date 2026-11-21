@@ -1,6 +1,13 @@
 import pytest
 import logging
 
+import json
+import threading
+import time
+
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+
 from monero import MoneroRpcConnection, MoneroConnectionType, MoneroError, MoneroRpcError, MoneroUtils
 from utils import (
     TestUtils as Utils, RpcConnectionUtils,
@@ -8,6 +15,88 @@ from utils import (
 )
 
 logger: logging.Logger = logging.getLogger("TestMoneroRpcConnection")
+
+# The crafted result of the raw response tests: every value is one that a property tree walk
+# cannot represent, so the response objects must be built from the raw bodies with python's
+# own json parsing to keep the types
+RAW_RESPONSE_TYPES: dict[str, Any] = {
+    "empty_object": {},
+    "empty_array": [],
+    "empty_string": "",
+    "zero": 0,
+    "nested": {"list": [], "dict": {}},
+    "amount": 123456789012345678,
+    "uint64_max_plus_one": 18446744073709551616,
+    "int64_min_minus_one": -9223372036854775809,
+    "negative_float": -1.8e19,
+}
+
+
+class RawResponseHandler(BaseHTTPRequestHandler):
+    """Answers the requests with crafted raw response bodies, and delays the ones of the slow
+    method. A stand-in for a real rpc server in the raw response tests only: the connection
+    under test is the real one, the peer is not.
+    """
+
+    protocol_version = "HTTP/1.1"
+
+    def do_POST(self) -> None:
+        """Answer a request with the crafted body of its method."""
+        length: int = int(self.headers.get("Content-Length", "0"))
+        request: dict[str, Any] = json.loads(self.rfile.read(length) or b"{}")
+        method: str = str(request.get("method", ""))
+        if self.path == "/json_rpc":
+            if method == "crafted_error_method":
+                response: dict[str, Any] = {"jsonrpc": "2.0", "id": "0", "error": {"code": -32601, "message": "Method not found"}}
+            elif method == "empty_message_error_method":
+                response = {"jsonrpc": "2.0", "id": "0", "error": {"code": -2, "message": ""}}
+            elif method == "code_only_error_method":
+                response = {"jsonrpc": "2.0", "id": "0", "error": {"code": -2}}
+            elif method == "slow_method":
+                time.sleep(0.5)
+                response = {"jsonrpc": "2.0", "id": "0", "result": {"status": "OK"}}
+            else:
+                response = {"jsonrpc": "2.0", "id": "0", "result": RAW_RESPONSE_TYPES}
+        else:
+            # a path request: the whole body is the response
+            response = RAW_RESPONSE_TYPES
+        body: bytes = json.dumps(response).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+class RawResponseServer(ThreadingHTTPServer):
+    """A rpc server that answers with the crafted raw response bodies. Use it as a context
+    manager.
+    """
+
+    def __init__(self) -> None:
+        """Initialize a new RawResponseServer on an ephemeral port."""
+        super().__init__(("127.0.0.1", 0), RawResponseHandler)
+        self._thread: threading.Thread = threading.Thread(target=self.serve_forever, daemon=True)
+
+    @property
+    def uri(self) -> str:
+        """Uri of the server.
+
+        :returns str: uri to give to the rpc connection.
+        """
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+    def __enter__(self) -> "RawResponseServer":
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.shutdown()
+        self.server_close()
+        self._thread.join(timeout=5)
 
 
 @pytest.mark.integration
@@ -270,6 +359,92 @@ class TestMoneroRpcConnection(BaseTestClass):
         with pytest.raises(MoneroRpcError) as exc_info:
             node_connection.send_path_request("invalid_method")
         assert exc_info.value.code == 404
+
+    # Can send json requests that keep the types of the raw response
+    @pytest.mark.skipif(Utils.TEST_NON_RELAYS is False, reason="TEST_NON_RELAYS disabled")
+    def test_send_json_request_preserves_response_types(self) -> None:
+        with RawResponseServer() as server:
+            connection: MoneroRpcConnection = MoneroRpcConnection(server.uri)
+            result: object = connection.send_json_request("get_info")
+            self._test_raw_response_types(result)
+
+    # Can send path requests that keep the types of the raw response
+    @pytest.mark.skipif(Utils.TEST_NON_RELAYS is False, reason="TEST_NON_RELAYS disabled")
+    def test_send_path_request_preserves_response_types(self) -> None:
+        with RawResponseServer() as server:
+            connection: MoneroRpcConnection = MoneroRpcConnection(server.uri)
+            result: object = connection.send_path_request("get_info")
+            self._test_raw_response_types(result)
+
+    # Can keep the empty string of a live response, which is not retyped by the raw path
+    @pytest.mark.skipif(Utils.TEST_NON_RELAYS is False, reason="TEST_NON_RELAYS disabled")
+    def test_send_json_request_preserves_the_empty_string_of_a_live_response(self, node_connection: MoneroRpcConnection) -> None:
+        RpcConnectionUtils.setup_rpc_connection(node_connection)
+        result: object = node_connection.send_json_request("get_info")
+        assert isinstance(result, dict)
+
+        # the top hash of the regtest chain tip is a real empty string
+        top_hash: object = result["top_hash"]
+        assert top_hash == ""
+        assert isinstance(top_hash, str)
+
+    # Can raise the error response of a raw json request with the code and message of the property tree walk
+    @pytest.mark.skipif(Utils.TEST_NON_RELAYS is False, reason="TEST_NON_RELAYS disabled")
+    def test_send_json_request_raises_the_error_response(self) -> None:
+        with RawResponseServer() as server:
+            connection: MoneroRpcConnection = MoneroRpcConnection(server.uri)
+
+            # test the error with a code and a message
+            with pytest.raises(MoneroRpcError) as exc_info:
+                connection.send_json_request("crafted_error_method")
+            assert str(exc_info.value) == "Method not found"
+            assert exc_info.value.code == -32601
+
+            # test the error with an empty message, which carries a generic one
+            with pytest.raises(MoneroRpcError) as exc_info:
+                connection.send_json_request("empty_message_error_method")
+            assert str(exc_info.value) == "Received error response from RPC request with method 'empty_message_error_method' to /json_rpc"
+            assert exc_info.value.code == -2
+
+            # test the error with a code only, which carries an unknown message
+            with pytest.raises(MoneroRpcError) as exc_info:
+                connection.send_json_request("code_only_error_method")
+            assert str(exc_info.value) == "Unknown error"
+            assert exc_info.value.code == -2
+
+    # Can apply the timeout of a raw json request to the request itself
+    @pytest.mark.skipif(Utils.TEST_NON_RELAYS is False, reason="TEST_NON_RELAYS disabled")
+    def test_send_json_request_times_out(self) -> None:
+        with RawResponseServer() as server:
+            connection: MoneroRpcConnection = MoneroRpcConnection(server.uri)
+
+            # a request that outlives its timeout raises the network error
+            with pytest.raises(RuntimeError, match=r"Network error: no response from .* \(timeout: 100ms\)"):
+                connection.send_json_request("slow_method", timeout_ms=100)
+
+            # the same request completes under a longer timeout
+            result: object = connection.send_json_request("slow_method", timeout_ms=Utils.AUTO_CONNECT_TIMEOUT_MS * 5)
+            assert result is not None
+
+    # Test the types of a raw response that a property tree walk cannot represent
+    def _test_raw_response_types(self, result: object) -> None:
+        assert result == RAW_RESPONSE_TYPES
+
+        # the empty containers keep their own types instead of collapsing to an empty string
+        assert isinstance(result, dict)
+        assert isinstance(result["empty_object"], dict)
+        assert isinstance(result["empty_array"], list)
+        assert isinstance(result["empty_string"], str)
+        assert isinstance(result["nested"]["list"], list)
+        assert isinstance(result["nested"]["dict"], dict)
+
+        # the numbers beyond the 64 bit ranges keep their exact value instead of a lossy float
+        assert isinstance(result["uint64_max_plus_one"], int)
+        assert result["uint64_max_plus_one"] == 18446744073709551616
+        assert isinstance(result["int64_min_minus_one"], int)
+        assert result["int64_min_minus_one"] == -9223372036854775809
+        assert isinstance(result["negative_float"], float)
+        assert result["negative_float"] == -1.8e19
 
     #endregion
 

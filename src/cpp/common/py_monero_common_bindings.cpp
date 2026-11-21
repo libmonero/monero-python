@@ -52,6 +52,7 @@
  * Parts of this file are originally copyright (c) 2012-2013 The Cryptonote developers
  */
 #include "py_monero_types.h"
+#include "utils/gen_utils.h"
 
 void py_monero_bind_vectors_and_maps(py::module_& m) {
 
@@ -329,17 +330,36 @@ void py_monero_bind_common(py::module_& m, PyMoneroTypes& t) {
     }, py::arg("timeout_ms") = py::none(), py::call_guard<py::gil_scoped_release>())
     .def("send_json_request", [](monero_rpc_connection& self, const std::string &method, const boost::optional<py::object>& parameters, const boost::optional<uint32_t>& timeout_ms) {
       monero_rpc_request request(method, std::make_shared<PyMoneroRequestParams>(parameters));
-      auto response = self.send_json_request(request, timeout_ms);
-      boost::optional<py::object> res;
-      if (response.m_result != boost::none) res = PyGenUtils::ptree_to_pyobject(*response.m_result);
-      return res;
+      std::string body = request.serialize();
+      std::string raw_response;
+      {
+        // the parameters are serialized under the gil, the request itself runs without it
+        py::gil_scoped_release release;
+        raw_response = self.invoke_post("/json_rpc", body, timeout_ms);
+        // the error check of the send request methods, so the error shape stays in one place
+        boost::property_tree::ptree node;
+        gen_utils::deserialize(raw_response, node);
+        boost::optional<boost::property_tree::ptree&> error_node = node.get_child_optional("error");
+        if (error_node != boost::none) monero_rpc_connection::raise_rpc_error(error_node.get(), "/json_rpc", method);
+      }
+      return PyGenUtils::parse_rpc_response(raw_response, true);
     }, py::arg("method"), py::arg("parameters") = py::none(), py::arg("timeout_ms") = py::none())
     .def("send_path_request", [](monero_rpc_connection& self, const std::string &method, const boost::optional<py::object>& parameters, const boost::optional<uint32_t>& timeout_ms) {
+      if (method.empty()) throw monero_error("No RPC method set in path request");
       monero_rpc_request request(method, std::make_shared<PyMoneroRequestParams>(parameters), false);
-      auto response = self.send_path_request(request, timeout_ms);
-      boost::optional<py::object> res;
-      if (response.m_response != boost::none) res = PyGenUtils::ptree_to_pyobject(*response.m_response);
-      return res;
+      std::string body = request.serialize();
+      std::string raw_response;
+      {
+        // the parameters are serialized under the gil, the request itself runs without it
+        py::gil_scoped_release release;
+        raw_response = self.invoke_post("/" + method, body, timeout_ms);
+        // the error check of the send request methods, so the error shape stays in one place
+        boost::property_tree::ptree node;
+        gen_utils::deserialize(raw_response, node);
+        boost::optional<boost::property_tree::ptree&> error_node = node.get_child_optional("error");
+        if (error_node != boost::none) monero_rpc_connection::raise_rpc_error(error_node.get(), "/" + method, method);
+      }
+      return PyGenUtils::parse_rpc_response(raw_response, false);
     }, py::arg("method"), py::arg("parameters") = py::none(), py::arg("timeout_ms") = py::none())
     .def("send_binary_request", [](monero_rpc_connection& self, const std::string &method, const boost::optional<py::object>& parameters, const boost::optional<uint32_t>& timeout_ms) {
       monero_rpc_request request(method, std::make_shared<PyMoneroRequestParams>(parameters), false);

@@ -65,66 +65,23 @@ py::dict PyGenUtils::deserialize(const std::string& s) {
   return fn(s).cast<py::dict>();
 }
 
-py::object PyGenUtils::convert_value(const std::string& val) {
-  if (val == "true") return py::bool_(true);
-  if (val == "false") return py::bool_(false);
-
-  // parse the integers with their full 64 bit range, the monero amounts overflow an int
+py::object PyGenUtils::parse_rpc_response(const std::string& body, bool json_rpc) {
+  // parse the raw body with python's own json parsing, which keeps the empty containers and the
+  // exact numbers that a property tree walk cannot represent
+  py::object response;
   try {
-    std::size_t pos;
-    long long i = std::stoll(val, &pos);
-    if (pos == val.size()) return py::int_(i);
-  } catch (...) {}
-
-  // an unsigned integer holds the values past the range of a signed one, but wraps the negative ones
-  if (val.find('-') == std::string::npos) {
-    try {
-      std::size_t pos;
-      unsigned long long u = std::stoull(val, &pos);
-      if (pos == val.size()) return py::int_(u);
-    } catch (...) {}
+    response = py::module_::import("json").attr("loads")(py::bytes(body));
+  } catch (const py::error_already_set& e) {
+    // a body that is not json is not a decode error of python, it is a bad answer of the server
+    throw monero_error(std::string("Failed to parse the RPC response as json: ") + e.what());
   }
-
-  try {
-    std::size_t pos;
-    double d = std::stod(val, &pos);
-    if (pos == val.size()) return py::float_(d);
-  } catch (...) {}
-
-  return py::str(val);
-}
-
-py::object PyGenUtils::ptree_to_pyobject(const boost::property_tree::ptree& tree) {
-  if (tree.empty()) {
-    return convert_value(tree.get_value<std::string>());
-  }
-
-  bool is_array = true;
-  for (const auto& child : tree) {
-    if (child.first != "") {
-      is_array = false;
-      break;
-    }
-  }
-
-  if (is_array) {
-    py::list lst;
-    for (const auto& child : tree) {
-      lst.append(ptree_to_pyobject(child.second));
-    }
-    return lst;
-  }
-  else {
-    py::dict d;
-    if (!tree.get_value<std::string>().empty()) {
-      d["__value__"] = convert_value(tree.get_value<std::string>());
-    }
-    for (const auto& child : tree) {
-      d[py::str(child.first)] = ptree_to_pyobject(child.second);
-    }
-
-    return d;
-  }
+  // a non-object answer carries no json rpc result
+  if (!py::isinstance<py::dict>(response)) return json_rpc ? py::none() : response;
+  py::dict answer = response;
+  // return the result of a json rpc response, which raise_rpc_error checked for an error already
+  if (json_rpc) return answer.contains("result") ? py::object(answer["result"]) : py::none();
+  // a response that carries the jsonrpc key was already answered as a json rpc one
+  return answer.contains("jsonrpc") ? py::none() : response;
 }
 
 // --------------------------- MONERO REQUEST PARAMS ---------------------------

@@ -57,6 +57,7 @@
 #include <pybind11/stl.h>
 #include <boost/optional.hpp>
 
+#include "common/monero_error.h"
 #include "common/monero_rpc_connection.h"
 #include "daemon/monero_daemon_model.h"
 
@@ -111,8 +112,16 @@ class PyGenUtils {
 public:
   static std::string serialize(const py::dict& d);
   static py::dict deserialize(const std::string& s);
-  static py::object convert_value(const std::string& val);
-  static py::object ptree_to_pyobject(const boost::property_tree::ptree& tree);
+  /**
+   * Parse a raw RPC response body with python's own json, which keeps the empty containers
+   * and the exact numbers that a property tree walk cannot represent. The error check of the
+   * body belongs to monero-cpp's raise_rpc_error, which the caller runs before this parse.
+   *
+   * @param body is the raw response body to parse
+   * @param json_rpc is true if the body answers a json rpc request, which carries its result
+   * @return py::object the parsed response, the result of a json rpc one
+   */
+  static py::object parse_rpc_response(const std::string& body, bool json_rpc);
 };
 
 struct PyMoneroRequestParams : public monero_request_params {
@@ -124,3 +133,4 @@ public:
 
   rapidjson::Value to_rapidjson_val(rapidjson::Document::AllocatorType& allocator) const override;
 };
+
