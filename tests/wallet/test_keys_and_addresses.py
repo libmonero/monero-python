@@ -498,3 +498,24 @@ class TestMoneroWalletKeysKeysAndAddresses(KeysWalletSupport, BaseTestMoneroWall
             WalletUtils.test_message_signature_result(result, False)
         finally:
             w.close()
+
+    # A python override of import_multisig_hex receives the caller's refresh flag in every call form
+    @pytest.mark.skipif(Utils.TEST_NON_RELAYS is False, reason="TEST_NON_RELAYS disabled")
+    def test_import_multisig_hex_forwards_refresh_after_import(self) -> None:
+        forwarded: list[bool] = []
+
+        class MultisigWallet(MoneroWallet):
+            def import_multisig_hex(self, multisig_hexes: list[str], refresh_after_import: bool = True) -> int:
+                forwarded.append(refresh_after_import)
+                return 42
+
+        wallet: MoneroWallet = MultisigWallet()
+
+        # calling through the binding dispatches to the python override over the trampoline
+        assert MoneroWallet.import_multisig_hex(wallet, ["ab"], False) == 42
+        assert MoneroWallet.import_multisig_hex(wallet, ["cd"], True) == 42
+        assert MoneroWallet.import_multisig_hex(wallet, ["ef"]) == 42
+        assert MoneroWallet.import_multisig_hex(wallet, multisig_hexes=["gh"], refresh_after_import=False) == 42
+
+        # the caller's value is forwarded in the positional, keyword, and omitted forms
+        assert forwarded == [False, True, True, False]
