@@ -69,11 +69,21 @@ py::object PyGenUtils::convert_value(const std::string& val) {
   if (val == "true") return py::bool_(true);
   if (val == "false") return py::bool_(false);
 
+  // parse the integers with their full 64 bit range, the monero amounts overflow an int
   try {
     std::size_t pos;
-    int i = std::stoi(val, &pos);
+    long long i = std::stoll(val, &pos);
     if (pos == val.size()) return py::int_(i);
   } catch (...) {}
+
+  // an unsigned integer holds the values past the range of a signed one, but wraps the negative ones
+  if (val.find('-') == std::string::npos) {
+    try {
+      std::size_t pos;
+      unsigned long long u = std::stoull(val, &pos);
+      if (pos == val.size()) return py::int_(u);
+    } catch (...) {}
+  }
 
   try {
     std::size_t pos;
