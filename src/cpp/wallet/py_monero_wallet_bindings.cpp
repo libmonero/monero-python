@@ -953,12 +953,7 @@ void py_monero_bind_wallet(py::module_& m, PyMoneroTypes& t) {
       MONERO_CATCH_AND_RETHROW(self.sign_message(msg, signature_type, account_idx, subaddress_idx));
     }, py::arg("msg"), py::arg("signature_type"), py::arg("account_idx") = 0, py::arg("subaddress_idx") = 0, py::call_guard<py::gil_scoped_release>())
     .def("verify_message", [](PyMoneroWallet& self, const std::string& msg, const std::string& address, const std::string& signature) {
-      try {
-        return self.verify_message(msg, address, signature);
-      } catch (...) {
-        // TODO wallet full can differentiate incorrect from invalid address, but rpc returns -2 for both, so returning bad result for consistency
-        return monero_message_signature_result();
-      }
+      MONERO_CATCH_AND_RETHROW(self.verify_message(msg, address, signature));
     }, py::arg("msg"), py::arg("address"), py::arg("signature"), py::call_guard<py::gil_scoped_release>())
     .def("get_tx_key", [](PyMoneroWallet& self, const std::string& tx_hash) {
       MONERO_CATCH_AND_RETHROW(self.get_tx_key(tx_hash));
