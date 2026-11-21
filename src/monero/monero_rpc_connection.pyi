@@ -93,7 +93,11 @@ class MoneroRpcConnection(SerializableStruct):
         """
         Check the connection and update online, authentication, and response time status.
 
-        :param int|None timeout_ms: the maximum response time before considered offline.
+        :param int|None timeout_ms: the maximum response time before considered offline. Applies
+            to the request itself, not to the initial connection: a fresh connection to an
+            unreachable host can block for the connect timeout of the operating system (about 75
+            seconds on some platforms) before this timeout applies. A value of `0` means an
+            indefinite timeout.
         :returns bool: `True` if there is a change in status, `False` otherwise.
         """
         ...
@@ -160,7 +164,10 @@ class MoneroRpcConnection(SerializableStruct):
 
         :param str method: is the method to request.
         :param Optional[object] parameters: are the request's input parameters (default `None`).
-        :param Optional[int] timeout_ms: request timeout in milliseconds.
+        :param Optional[int] timeout_ms: request timeout in milliseconds. Applies to the request
+            itself, not to the initial connection: a fresh connection to an unreachable host can
+            block for the connect timeout of the operating system (about 75 seconds on some
+            platforms) before this timeout applies. A value of `0` means an indefinite timeout.
         :returns object | None: the RPC API response as a map.
         """
         ...
@@ -173,7 +180,10 @@ class MoneroRpcConnection(SerializableStruct):
 
         :param str method: is the url path of the request to invoke.
         :param Optional[object] parameters: are request parameters sent in the body.
-        :param Optional[int] timeout_ms: request timeout in milliseconds.
+        :param Optional[int] timeout_ms: request timeout in milliseconds. Applies to the request
+            itself, not to the initial connection: a fresh connection to an unreachable host can
+            block for the connect timeout of the operating system (about 75 seconds on some
+            platforms) before this timeout applies. A value of `0` means an indefinite timeout.
         :returns object | None: the request's deserialized response.
         """
         ...
@@ -184,7 +194,10 @@ class MoneroRpcConnection(SerializableStruct):
 
         :param str method: is the path of the binary RPC method to invoke.
         :param Optional[object] parameters: are the request parameters (default `None`).
-        :param Optional[int] timeout_ms: request timeout in milliseconds.
+        :param Optional[int] timeout_ms: request timeout in milliseconds. Applies to the request
+            itself, not to the initial connection: a fresh connection to an unreachable host can
+            block for the connect timeout of the operating system (about 75 seconds on some
+            platforms) before this timeout applies. A value of `0` means an indefinite timeout.
         :returns bytes | None: the request's deserialized binary response.
         """
         ...
